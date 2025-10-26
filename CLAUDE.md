@@ -2,9 +2,34 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Final Project Goal
+
+**dwarf2pdb** produces an executable that converts DWARF-embedded executables into stripped executables with separate PDB debug files:
+
+**Input:** DWARF-embedded executable (ELF/PE with embedded DWARF debug info)
+**Output:** Stripped executable + separate PDB file
+
+This enables Windows debugging tools (Visual Studio, WinDbg) to work with executables originally compiled with DWARF debug information (GCC, Clang on Linux/macOS).
+
+## Development Methodology: Test Driven Development (TDD)
+
+This project follows **strict Test Driven Development**:
+
+1. **Write tests first** - Every feature starts with a failing test that defines the expected behavior
+2. **Implement minimally** - Write just enough code to make the test pass
+3. **Refactor** - Improve code quality while maintaining passing tests
+4. **Iterate** - Repeat the cycle for each new feature
+
+**TDD Test Hierarchy:**
+- **Unit tests (ut/)** - Test individual components in isolation
+- **Integration tests (it/)** - Test format I/O pipelines with real libraries
+- **System tests (st/)** - Test end-to-end conversion with real executables
+
+All code changes must maintain or increase test coverage. No feature is complete without corresponding tests.
+
 ## Project Overview
 
-**newDwarf2Pdb** is a DWARF ↔ PDB bidirectional converter that enables round-trip translation between debug formats. The project uses a three-layer architecture with a format-neutral intermediate representation (IR) layer between DWARF and PDB layers.
+**dwarf2pdb** is a DWARF ↔ PDB bidirectional converter that enables round-trip translation between debug formats. The project uses a three-layer architecture with a format-neutral intermediate representation (IR) layer between DWARF and PDB layers.
 
 ### Project Organization
 

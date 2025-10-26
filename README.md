@@ -1,3 +1,45 @@
+# dwarf2pdb - DWARF to PDB Executable Converter
+
+## Final Project Goal
+
+**dwarf2pdb** produces an executable that converts DWARF-embedded executables into stripped executables with separate PDB debug files:
+
+**Input:** DWARF-embedded executable (ELF/PE with embedded DWARF debug info)
+**Output:** Stripped executable + separate PDB file
+
+### Use Case
+Enable Windows debugging tools (Visual Studio, WinDbg, Windows Performance Analyzer) to debug executables originally compiled with DWARF debug information (GCC, Clang on Linux/macOS, MinGW).
+
+### Example Usage
+```bash
+# Convert DWARF-embedded executable to stripped exe + PDB
+dwarf2pdb my_program.exe my_program_stripped.exe my_program.pdb
+
+# Result:
+# - my_program_stripped.exe (no debug info, smaller size)
+# - my_program.pdb (full debug information in PDB format)
+```
+
+## Development Methodology: Test Driven Development (TDD)
+
+This project follows **strict Test Driven Development**:
+
+1. **Write tests first** - Define expected behavior through failing tests
+2. **Implement minimally** - Write just enough code to pass tests
+3. **Refactor** - Improve code while maintaining test coverage
+4. **Iterate** - Repeat for each feature
+
+**Test Hierarchy:**
+- **Unit tests (ut/)** - Component isolation tests (node ↔ IR transformations)
+- **Integration tests (it/)** - Format I/O with real DWARF/PDB libraries
+- **System tests (st/)** - End-to-end executable conversion validation
+
+All features require corresponding tests. Code coverage must be maintained or increased with every change.
+
+---
+
+## Architecture Discussion
+
 Love this problem. You're basically trying to build a round-trip translator between DWARF and PDB:
 
 1. Load DWARF → create "dwarf object model"
@@ -5,7 +47,7 @@ Love this problem. You're basically trying to build a round-trip translator betw
 3. Use a PDB writer lib to emit a real PDB file
 4. Later read that PDB → rebuild DWARF
 
-You’re asking:
+You're asking:
 
 * Can we do 1:1 mapping?
 * How do we handle shared / recursive types and ID assignment?
@@ -386,4 +428,3 @@ This gives you:
 * A clean seam to add future formats (e.g. DWARF5+Split-DWARF, or CV in PE/OBJ with incremental linking quirks)
 
 This is a solid base to implement DWARF→PDB→DWARF without losing meaning.
-# dwarf2pdb
