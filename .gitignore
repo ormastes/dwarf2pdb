@@ -1,0 +1,203 @@
+# ============================================================================
+# Build directories
+# ============================================================================
+build/
+build_*/
+build-*/
+out/
+cmake-build-*/
+.ninja_*
+
+# ============================================================================
+# Downloaded libraries and tools (auto-downloaded by CMake)
+# ============================================================================
+pdb_lib/
+dwarf_lib/
+lib/
+tools/
+
+# ============================================================================
+# Compiled output
+# ============================================================================
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.obj
+*.o
+*.lo
+*.la
+
+# ============================================================================
+# CMake generated files
+# ============================================================================
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+_deps/
+Testing/
+install_manifest.txt
+compile_commands.json
+CPackConfig.cmake
+CPackSourceConfig.cmake
+
+# ============================================================================
+# IDE and Editor files
+# ============================================================================
+# Visual Studio / Visual Studio Code
+.vs/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+
+# JetBrains (CLion, IntelliJ)
+.idea/
+cmake-build-*/
+*.iml
+*.iws
+
+# Vim
+*.swp
+*.swo
+*~
+.*.swp
+.*.swo
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# Sublime Text
+*.sublime-workspace
+*.sublime-project
+
+# Kate
+*.kate-swp
+.*.kate-swp
+
+# ============================================================================
+# OS-specific files
+# ============================================================================
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.stackdump
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# ============================================================================
+# Logs and temporary files
+# ============================================================================
+*.log
+*.tmp
+*.temp
+*.bak
+*.cache
+*.pid
+*.seed
+*.pid.lock
+/tmp/
+
+# Test output
+/test_output/
+/test_results/
+
+# ============================================================================
+# Generated documentation
+# ============================================================================
+/doc/html/
+/doc/latex/
+/docs/_build/
+/docs/generated/
+Doxyfile.bak
+
+# ============================================================================
+# Package managers
+# ============================================================================
+# Conan
+conanfile.txt
+conaninfo.txt
+conanbuildinfo.*
+conan.lock
+
+# vcpkg
+vcpkg_installed/
+.vcpkg-root
+
+# ============================================================================
+# Coverage and profiling
+# ============================================================================
+*.gcda
+*.gcno
+*.gcov
+*.profdata
+*.profraw
+coverage/
+htmlcov/
+
+# ============================================================================
+# Sanitizer output
+# ============================================================================
+*.asan
+*.ubsan
+*.tsan
+*.msan
+
+# ============================================================================
+# Downloaded installers (from download_tool_libs.cmake)
+# ============================================================================
+vs_buildtools.exe
+install_msvc.bat
+llvm-mingw-*.zip
+mingw-gcc32.zip
+winlibs-*.zip
+
+# ============================================================================
+# Project-specific
+# ============================================================================
+# Test binaries
+ut_tests
+it_dwarf_tests
+it_pdb_tests
+st_tests
+dwarf_pdb_converter
+newDwarf2Pdb
+
+# Test data (keep templates, ignore generated)
+/testdata/*.pdb
+/testdata/*.o
+/testdata/*.obj
+!/testdata/*.template.*
+
+# Benchmark results
+/benchmarks/results/
+
+# ============================================================================
+# Keep these files
+# ============================================================================
+!.gitignore
+!.gitkeep

@@ -1,0 +1,728 @@
+awesome, we're about to lock down the scope of what we have to support 😎
+
+You're asking for two things:
+
+1. Look at DWARF5 spec, list all the “items”.
+2. Turn that list into test data so we can systematically verify our converter.
+
+Below I’m going to:
+
+* define what “items” actually matter for our DWARF↔IR↔PDB pipeline,
+* dump the canonical lists (DW_TAG_*, DW_AT_*, DW_FORM_*, DW_LANG_*, DW_UT_*),
+* and generate Catch2-friendly code to make sure we never forget to map any of them.
+
+All numeric values and names for tags / attributes / forms / etc. are taken from DWARFv5 and recent libdwarf headers, which track DWARF5 and newer committee-approved extensions. ([Prevanders][1]) DW_LANG values also follow DWARF5 table 3.1 plus later additions like Rust, Swift, etc., which are already in upstream toolchains. ([Dwarfstd][2])
+DW_UT_* unit types are from DWARF5. ([TrustedFirmware][3])
+
+---
+
+## 1. What we must cover in DWARF for round-trip
+
+When we convert DWARF ⇄ IR ⇄ PDB we need to cover:
+
+### A. DIE Tags (`DW_TAG_*`)
+
+These identify what a DIE (Debugging Information Entry) *is*: struct, member, array_type, variable, etc. DWARF5 adds things like `DW_TAG_atomic_type`, `DW_TAG_call_site`, `DW_TAG_skeleton_unit`, `DW_TAG_immutable_type`. ([Prevanders][1])
+These tags directly map to PDB things like LF_STRUCTURE, LF_MEMBER, LF_ARRAY, etc.
+
+We care most about:
+
+* Types (struct/union/class, typedef, const/volatile/restrict/atomic qualifiers, pointer/reference/rvalue_reference, array_type, subrange_type for array bounds, enumeration_type, base_type, template params, etc.)
+* Variables (`DW_TAG_variable`, `DW_TAG_member`, `DW_TAG_formal_parameter`)
+* Code (`DW_TAG_subprogram`, `DW_TAG_inlined_subroutine`, `DW_TAG_lexical_block`)
+* Units (`DW_TAG_compile_unit`, `DW_TAG_type_unit`, `DW_TAG_partial_unit`, `DW_TAG_skeleton_unit`)
+
+Those must map 1:1 into our IR.
+
+### B. Attributes (`DW_AT_*`)
+
+Attributes are name/value pairs hanging off DIEs: `DW_AT_name`, `DW_AT_type`, `DW_AT_data_member_location`, `DW_AT_bit_size`, etc. These carry the actual info (field offset, bitfield width, const/volatile, linkage_name, etc.). ([Prevanders][1])
+In PDB terms, this is where we fill things like member offset, bitfield layout, calling convention flags, etc.
+
+We *must* support things needed for:
+
+* bitfields (`DW_AT_data_member_location`, `DW_AT_bit_size`, `DW_AT_bit_offset`)
+* unions / anonymous struct-in-union (`DW_AT_name` may be absent, parent/child nesting matters)
+* arrays (`DW_AT_upper_bound`, `DW_AT_count`, subrange DIEs)
+* templates (`DW_TAG_template_type_parameter`, `DW_TAG_template_value_parameter` plus `DW_AT_type`, `DW_AT_const_value`)
+* inline / inlined_subprogram (`DW_AT_abstract_origin`, `DW_AT_inline`)
+* CU-level info like `DW_AT_comp_dir`, `DW_AT_language`, `DW_AT_low_pc`/`DW_AT_high_pc`
+
+### C. Forms (`DW_FORM_*`)
+
+Forms describe how an attribute’s value is encoded (addr, data1, udata, strp, exprloc, etc.). DWARF5 adds indexed string/addr forms (`DW_FORM_strx*`, `DW_FORM_addrx*`), location/range list indices (`DW_FORM_loclistx`, `DW_FORM_rnglistx`), etc. ([Prevanders][1])
+We don’t need semantic mapping to PDB for forms, but our DWARF reader/writer wrappers must understand all forms we claim to support. Tests should assert we parse/emit them.
+
+### D. Source languages (`DW_LANG_*`)
+
+`DW_AT_language` in the compile unit tells us C/C++/Rust/etc. DWARF5 and newer toolchains define a long list: C89, C99, C11, C++, C++03/11/14, Rust, Swift, etc. ([Dwarfstd][2])
+This matters for PDB because PDB has language codes too; we’ll need mapping.
+
+### E. Unit types (`DW_UT_*`)
+
+DWARF5 introduced multiple unit types: `DW_UT_compile`, `DW_UT_type`, `DW_UT_partial`, `DW_UT_skeleton`, `DW_UT_split_compile`, `DW_UT_split_type`. These describe what kind of CU we’re looking at and are important for split DWARF / skeleton units. ([TrustedFirmware][3])
+PDB doesn’t have an identical concept, but we still have to round-trip them through IR so we can regenerate structurally equivalent DWARF.
+
+---
+
+## 2. Canonical DWARF5 lists we'll lock in tests
+
+### 2.1 DW_TAG_* core (DWARF standard up through DWARF5; ignoring vendor extension ranges 0x4080+ for first pass)
+
+```cpp
+// DWARF standard tags 0x01 .. 0x4b (DWARF2 → DWARF5).
+// Values from libdwarf's dwarf.h, which tracks DWARF5. :contentReference[oaicite:8]{index=8}
+enum class DwarfTag : uint16_t {
+    DW_TAG_array_type                = 0x01,
+    DW_TAG_class_type                = 0x02,
+    DW_TAG_entry_point               = 0x03,
+    DW_TAG_enumeration_type          = 0x04,
+    DW_TAG_formal_parameter          = 0x05,
+    DW_TAG_imported_declaration      = 0x08,
+    DW_TAG_label                     = 0x0a,
+    DW_TAG_lexical_block             = 0x0b,
+    DW_TAG_member                    = 0x0d,
+    DW_TAG_pointer_type              = 0x0f,
+    DW_TAG_reference_type            = 0x10,
+    DW_TAG_compile_unit              = 0x11,
+    DW_TAG_string_type               = 0x12,
+    DW_TAG_structure_type            = 0x13,
+    DW_TAG_subroutine_type           = 0x15,
+    DW_TAG_typedef                   = 0x16,
+    DW_TAG_union_type                = 0x17,
+    DW_TAG_unspecified_parameters    = 0x18,
+    DW_TAG_variant                   = 0x19,
+    DW_TAG_common_block              = 0x1a,
+    DW_TAG_common_inclusion          = 0x1b,
+    DW_TAG_inheritance               = 0x1c,
+    DW_TAG_inlined_subroutine        = 0x1d,
+    DW_TAG_module                    = 0x1e,
+    DW_TAG_ptr_to_member_type        = 0x1f,
+    DW_TAG_set_type                  = 0x20,
+    DW_TAG_subrange_type             = 0x21,
+    DW_TAG_with_stmt                 = 0x22,
+    DW_TAG_access_declaration        = 0x23,
+    DW_TAG_base_type                 = 0x24,
+    DW_TAG_catch_block               = 0x25,
+    DW_TAG_const_type                = 0x26,
+    DW_TAG_constant                  = 0x27,
+    DW_TAG_enumerator                = 0x28,
+    DW_TAG_file_type                 = 0x29,
+    DW_TAG_friend                    = 0x2a,
+    DW_TAG_namelist                  = 0x2b,
+    DW_TAG_namelist_item             = 0x2c, // a.k.a namelist_items historically
+    DW_TAG_packed_type               = 0x2d,
+    DW_TAG_subprogram                = 0x2e,
+    DW_TAG_template_type_parameter   = 0x2f,
+    DW_TAG_template_value_parameter  = 0x30,
+    DW_TAG_thrown_type               = 0x31,
+    DW_TAG_try_block                 = 0x32,
+    DW_TAG_variant_part              = 0x33,
+    DW_TAG_variable                  = 0x34,
+    DW_TAG_volatile_type             = 0x35,
+    DW_TAG_dwarf_procedure           = 0x36, // DWARF3
+    DW_TAG_restrict_type             = 0x37, // DWARF3
+    DW_TAG_interface_type            = 0x38, // DWARF3
+    DW_TAG_namespace                 = 0x39, // DWARF3
+    DW_TAG_imported_module           = 0x3a, // DWARF3
+    DW_TAG_unspecified_type          = 0x3b, // DWARF3
+    DW_TAG_partial_unit              = 0x3c, // DWARF3
+    DW_TAG_imported_unit             = 0x3d, // DWARF3
+    // DW_TAG_mutable_type (0x3e) withdrawn
+    DW_TAG_condition                 = 0x3f, // DWARF3f
+    DW_TAG_shared_type               = 0x40, // DWARF3f
+    DW_TAG_type_unit                 = 0x41, // DWARF4
+    DW_TAG_rvalue_reference_type     = 0x42, // DWARF4
+    DW_TAG_template_alias            = 0x43, // DWARF4
+    DW_TAG_coarray_type              = 0x44, // DWARF5
+    DW_TAG_generic_subrange          = 0x45, // DWARF5
+    DW_TAG_dynamic_type              = 0x46, // DWARF5
+    DW_TAG_atomic_type               = 0x47, // DWARF5
+    DW_TAG_call_site                 = 0x48, // DWARF5
+    DW_TAG_call_site_parameter       = 0x49, // DWARF5
+    DW_TAG_skeleton_unit             = 0x4a, // DWARF5
+    DW_TAG_immutable_type            = 0x4b  // DWARF5
+    // (Vendor ranges start at 0x4080 etc., we'll handle later.)
+};
+```
+
+We'll generate an array of all of these for coverage tests.
+
+### 2.2 DW_AT_* core attributes (again, DWARF1→DWARF5 + DWARF5 additions like call_* and *_base)
+
+```cpp
+// Attribute names and codes from libdwarf DWARF5 header. :contentReference[oaicite:9]{index=9}
+enum class DwarfAttr : uint16_t {
+    DW_AT_sibling                 = 0x01,
+    DW_AT_location                = 0x02,
+    DW_AT_name                    = 0x03,
+    DW_AT_ordering                = 0x09,
+    DW_AT_subscr_data             = 0x0a,
+    DW_AT_byte_size               = 0x0b,
+    DW_AT_bit_offset              = 0x0c,
+    DW_AT_bit_size                = 0x0d,
+    DW_AT_element_list            = 0x0f,
+    DW_AT_stmt_list               = 0x10,
+    DW_AT_low_pc                  = 0x11,
+    DW_AT_high_pc                 = 0x12,
+    DW_AT_language                = 0x13,
+    DW_AT_member                  = 0x14,
+    DW_AT_discr                   = 0x15,
+    DW_AT_discr_value             = 0x16,
+    DW_AT_visibility              = 0x17,
+    DW_AT_import                  = 0x18,
+    DW_AT_string_length           = 0x19,
+    DW_AT_common_reference        = 0x1a,
+    DW_AT_comp_dir                = 0x1b,
+    DW_AT_const_value             = 0x1c,
+    DW_AT_containing_type         = 0x1d,
+    DW_AT_default_value           = 0x1e,
+    DW_AT_inline                  = 0x20,
+    DW_AT_is_optional             = 0x21,
+    DW_AT_lower_bound             = 0x22,
+    DW_AT_producer                = 0x25,
+    DW_AT_prototyped              = 0x27,
+    DW_AT_return_addr             = 0x2a,
+    DW_AT_start_scope             = 0x2c,
+    DW_AT_bit_stride              = 0x2e, // aka DW_AT_stride_size
+    DW_AT_upper_bound             = 0x2f,
+    DW_AT_abstract_origin         = 0x31,
+    DW_AT_accessibility           = 0x32,
+    DW_AT_address_class           = 0x33,
+    DW_AT_artificial              = 0x34,
+    DW_AT_base_types              = 0x35,
+    DW_AT_calling_convention      = 0x36,
+    DW_AT_count                   = 0x37,
+    DW_AT_data_member_location    = 0x38,
+    DW_AT_decl_column             = 0x39,
+    DW_AT_decl_file               = 0x3a,
+    DW_AT_decl_line               = 0x3b,
+    DW_AT_declaration             = 0x3c,
+    DW_AT_discr_list              = 0x3d,
+    DW_AT_encoding                = 0x3e,
+    DW_AT_external                = 0x3f,
+    DW_AT_frame_base              = 0x40,
+    DW_AT_friend                  = 0x41,
+    DW_AT_identifier_case         = 0x42,
+    DW_AT_macro_info              = 0x43, // legacy pre-DWARF5 macro table
+    DW_AT_namelist_item           = 0x44,
+    DW_AT_priority                = 0x45,
+    DW_AT_segment                 = 0x46,
+    DW_AT_specification           = 0x47,
+    DW_AT_static_link             = 0x48,
+    DW_AT_type                    = 0x49,
+    DW_AT_use_location            = 0x4a,
+    DW_AT_variable_parameter      = 0x4b,
+    DW_AT_virtuality              = 0x4c,
+    DW_AT_vtable_elem_location    = 0x4d,
+    DW_AT_allocated               = 0x4e, // DWARF3
+    DW_AT_associated              = 0x4f, // DWARF3
+    DW_AT_data_location           = 0x50, // DWARF3
+    DW_AT_byte_stride             = 0x51,
+    DW_AT_entry_pc                = 0x52,
+    DW_AT_use_UTF8                = 0x53,
+    DW_AT_extension               = 0x54,
+    DW_AT_ranges                  = 0x55,
+    DW_AT_trampoline              = 0x56,
+    DW_AT_call_column             = 0x57,
+    DW_AT_call_file               = 0x58,
+    DW_AT_call_line               = 0x59,
+    DW_AT_description             = 0x5a,
+    DW_AT_binary_scale            = 0x5b,
+    DW_AT_decimal_scale           = 0x5c,
+    DW_AT_small                   = 0x5d,
+    DW_AT_decimal_sign            = 0x5e,
+    DW_AT_digit_count             = 0x5f,
+    DW_AT_picture_string          = 0x60,
+    DW_AT_mutable                 = 0x61,
+    DW_AT_threads_scaled          = 0x62,
+    DW_AT_explicit                = 0x63,
+    DW_AT_object_pointer          = 0x64,
+    DW_AT_endianity               = 0x65,
+    DW_AT_elemental               = 0x66,
+    DW_AT_pure                    = 0x67,
+    DW_AT_recursive               = 0x68,
+    DW_AT_signature               = 0x69, // DWARF4 type sig (type units)
+    DW_AT_main_subprogram         = 0x6a, // DWARF4
+    DW_AT_data_bit_offset         = 0x6b, // DWARF4
+    DW_AT_const_expr              = 0x6c, // DWARF4
+    DW_AT_enum_class              = 0x6d, // DWARF4 (scoped enums)
+    DW_AT_linkage_name            = 0x6e, // DWARF4 (a.k.a. mangled name)
+    DW_AT_string_length_bit_size  = 0x6f, // DWARF5
+    DW_AT_string_length_byte_size = 0x70, // DWARF5
+    DW_AT_rank                    = 0x71, // DWARF5
+    DW_AT_str_offsets_base        = 0x72, // DWARF5
+    DW_AT_addr_base               = 0x73, // DWARF5
+    DW_AT_rnglists_base           = 0x74, // DWARF5
+    DW_AT_dwo_id                  = 0x75, // split DWARF; experimental pre-final DWARF5
+    DW_AT_dwo_name                = 0x76, // DWARF5
+    DW_AT_reference               = 0x77, // DWARF5
+    DW_AT_rvalue_reference        = 0x78, // DWARF5
+    DW_AT_macros                  = 0x79, // DWARF5 macro section
+    DW_AT_call_all_calls          = 0x7a, // DWARF5
+    DW_AT_call_all_source_calls   = 0x7b, // DWARF5
+    DW_AT_call_all_tail_calls     = 0x7c, // DWARF5
+    DW_AT_call_return_pc          = 0x7d, // DWARF5
+    DW_AT_call_value              = 0x7e, // DWARF5
+    DW_AT_call_origin             = 0x7f, // DWARF5
+    DW_AT_call_parameter          = 0x80, // DWARF5
+    DW_AT_call_pc                 = 0x81, // DWARF5
+    DW_AT_call_tail_call          = 0x82, // DWARF5
+    DW_AT_call_target             = 0x83, // DWARF5
+    DW_AT_call_target_clobbered   = 0x84, // DWARF5
+    DW_AT_call_data_location      = 0x85, // DWARF5
+    DW_AT_call_data_value         = 0x86, // DWARF5
+    DW_AT_noreturn                = 0x87, // DWARF5
+    DW_AT_alignment               = 0x88, // DWARF5
+    DW_AT_export_symbols          = 0x89, // DWARF5
+    DW_AT_deleted                 = 0x8a, // DWARF5
+    DW_AT_defaulted               = 0x8b, // DWARF5
+    DW_AT_loclists_base           = 0x8c, // DWARF5 loclists base
+    // DW_AT_language_name (0x90) and DW_AT_language_version (0x91) are
+    // committee-blessed for DWARF6 but already reserved for future use,
+    // and toolchains are allowed to use them early. :contentReference[oaicite:10]{index=10}
+    DW_AT_language_name           = 0x90,
+    DW_AT_language_version        = 0x91
+};
+```
+
+For our converter, the most important attributes day one:
+
+* layout + bitfields: `DW_AT_data_member_location`, `DW_AT_bit_size`, `DW_AT_bit_offset`, `DW_AT_byte_size`, `DW_AT_alignment`
+* type refs: `DW_AT_type`, `DW_AT_containing_type`, `DW_AT_signature`
+* names / linkage: `DW_AT_name`, `DW_AT_linkage_name`
+* code ranges: `DW_AT_low_pc`, `DW_AT_high_pc`, `DW_AT_ranges`
+* CU info: `DW_AT_language`, `DW_AT_comp_dir`, `DW_AT_producer`
+
+These should definitely fail tests if we ever “forget” to map them.
+
+### 2.3 DW_FORM_* (attribute value encodings)
+
+```cpp
+// DWARF forms through DWARF5 (no GNU extensions yet). :contentReference[oaicite:11]{index=11}
+enum class DwarfForm : uint16_t {
+    DW_FORM_addr              = 0x01,
+    DW_FORM_block2            = 0x03,
+    DW_FORM_block4            = 0x04,
+    DW_FORM_data2             = 0x05,
+    DW_FORM_data4             = 0x06,
+    DW_FORM_data8             = 0x07,
+    DW_FORM_string            = 0x08,
+    DW_FORM_block             = 0x09,
+    DW_FORM_block1            = 0x0a,
+    DW_FORM_data1             = 0x0b,
+    DW_FORM_flag              = 0x0c,
+    DW_FORM_sdata             = 0x0d,
+    DW_FORM_strp              = 0x0e,
+    DW_FORM_udata             = 0x0f,
+    DW_FORM_ref_addr          = 0x10,
+    DW_FORM_ref1              = 0x11,
+    DW_FORM_ref2              = 0x12,
+    DW_FORM_ref4              = 0x13,
+    DW_FORM_ref8              = 0x14,
+    DW_FORM_ref_udata         = 0x15,
+    DW_FORM_indirect          = 0x16,
+    DW_FORM_sec_offset        = 0x17,  // DWARF4+
+    DW_FORM_exprloc           = 0x18,  // DWARF4+
+    DW_FORM_flag_present      = 0x19,  // DWARF4+
+    DW_FORM_strx              = 0x1a,  // DWARF5 indexed string
+    DW_FORM_addrx             = 0x1b,  // DWARF5 indexed addr
+    DW_FORM_ref_sup4          = 0x1c,  // DWARF5
+    DW_FORM_strp_sup          = 0x1d,  // DWARF5
+    DW_FORM_data16            = 0x1e,  // DWARF5
+    DW_FORM_line_strp         = 0x1f,  // DWARF5 .debug_line.str
+    DW_FORM_ref_sig8          = 0x20,  // DWARF4 type signature reference
+    DW_FORM_implicit_const    = 0x21,  // DWARF5
+    DW_FORM_loclistx          = 0x22,  // DWARF5
+    DW_FORM_rnglistx          = 0x23,  // DWARF5
+    DW_FORM_ref_sup8          = 0x24,  // DWARF5
+    DW_FORM_strx1             = 0x25,  // DWARF5
+    DW_FORM_strx2             = 0x26,  // DWARF5
+    DW_FORM_strx3             = 0x27,  // DWARF5
+    DW_FORM_strx4             = 0x28,  // DWARF5
+    DW_FORM_addrx1            = 0x29,  // DWARF5
+    DW_FORM_addrx2            = 0x2a,  // DWARF5
+    DW_FORM_addrx3            = 0x2b,  // DWARF5
+    DW_FORM_addrx4            = 0x2c   // DWARF5
+};
+```
+
+We *will* eventually also want GNU split-dwarf forms like `DW_FORM_GNU_addr_index`, `DW_FORM_GNU_str_index`, etc., but we can test those separately / behind a feature flag. ([Prevanders][1])
+
+### 2.4 DW_LANG_* (source languages)
+
+DWARF5 lists a lot of language codes: C89, C99, C11, C++, C++03, C++11, C++14, Rust, Swift, Go, etc. ([Dwarfstd][2])
+We'll store them because CU.language must map to PDB's source language field.
+
+We'll model a trimmed but still broad enum:
+
+```cpp
+// Language names from DWARF5 table plus common post-DWARF4 additions
+// visible in LLVM/libdwarf today (Rust, Swift, Go, Julia, etc.). :contentReference[oaicite:14]{index=14}
+enum class DwarfLang : uint16_t {
+    DW_LANG_C89,
+    DW_LANG_C,
+    DW_LANG_Ada83,
+    DW_LANG_C_plus_plus,
+    DW_LANG_Cobol74,
+    DW_LANG_Cobol85,
+    DW_LANG_Fortran77,
+    DW_LANG_Fortran90,
+    DW_LANG_Pascal83,
+    DW_LANG_Modula2,
+    DW_LANG_Java,
+    DW_LANG_C99,
+    DW_LANG_Ada95,
+    DW_LANG_Fortran95,
+    DW_LANG_PLI,
+    DW_LANG_ObjC,
+    DW_LANG_ObjC_plus_plus,
+    DW_LANG_UPC,
+    DW_LANG_D,
+    DW_LANG_Python,
+    DW_LANG_OpenCL,
+    DW_LANG_Go,
+    DW_LANG_Modula3,
+    DW_LANG_Haskell,
+    DW_LANG_C_plus_plus_03,
+    DW_LANG_C_plus_plus_11,
+    DW_LANG_OCaml,
+    DW_LANG_Rust,
+    DW_LANG_C11,
+    DW_LANG_Swift,
+    DW_LANG_Julia,
+    DW_LANG_Dylan,
+    DW_LANG_C_plus_plus_14,
+    DW_LANG_Fortran03,
+    DW_LANG_Fortran08,
+    DW_LANG_RenderScript,
+    DW_LANG_BLISS,
+    DW_LANG_Mips_Assembler,
+    DW_LANG_GOOGLE_RenderScript,
+    DW_LANG_BORLAND_Delphi
+    // (lo_user..hi_user reserved vendor range skipped for baseline)
+};
+```
+
+### 2.5 DW_UT_* (unit types, DWARF5)
+
+Unit type appears in CU headers in DWARF5 and matters for skeleton/full unit pairs. ([TrustedFirmware][3])
+
+```cpp
+enum class DwarfUnitType : uint8_t {
+    DW_UT_compile,        // full .debug_info compile unit
+    DW_UT_type,           // standalone type unit
+    DW_UT_partial,        // partial unit
+    DW_UT_skeleton,       // minimal skeleton CU (with dwo_id)
+    DW_UT_split_compile,  // split DWARF compile unit
+    DW_UT_split_type      // split DWARF type unit
+    // plus DW_UT_lo_user..DW_UT_hi_user vendor range not in baseline tests
+};
+```
+
+Those cover everything we *must not drop*.
+
+---
+
+## 3. Turn the list into Catch2-based tests
+
+Goal of tests:
+
+* We want completeness tests that scream if:
+
+  * a DW_TAG_* doesn’t have an IR mapping,
+  * or a DW_AT_* we claim to support doesn’t get translated,
+  * or we forgot to emit/read certain DW_FORM_*.
+
+We'll assume we have (or will have) these functions in our converter layer:
+
+```cpp
+// Map DWARF → IR
+std::optional<IrNode> DwarfDieToIr(const DwarfNode& dwarfDie);
+
+// Map IR → DWARF
+std::optional<DwarfNode> IrToDwarfDie(const IrNode& ir);
+
+// Helpers to answer "do we support this X?"
+bool SupportsDwarfTag(DwarfTag tag);
+bool SupportsDwarfAttr(DwarfAttr attr);
+bool SupportsDwarfForm(DwarfForm form);
+bool SupportsDwarfLang(DwarfLang lang);
+bool SupportsDwarfUnitType(DwarfUnitType ut);
+```
+
+The tests below iterate every enum value from our spec lists and REQUIRE that `Supports...()` returns true. This is how we enforce 1:1 coverage of the spec items we chose.
+
+### `include/dwarf/DwarfSpec.h`
+
+```cpp
+#pragma once
+#include <cstdint>
+#include <array>
+
+namespace cv2pdb::dwarf {
+
+// ---- enums (same as above snippets) ----
+// DwarfTag, DwarfAttr, DwarfForm, DwarfLang, DwarfUnitType
+// ... (paste the enums from section 2.1 – 2.5 here)
+
+// Core lists we consider mandatory for round-trip.
+// We skip vendor extensions and experimental vendor ranges in v1 tests.
+
+constexpr std::array<DwarfTag,  // update count if you edit
+    0
+    + 1 /*array_type*/
+    + 1 /*class_type*/
+    + 1 /*entry_point*/
+    + 1 /*enumeration_type*/
+    + 1 /*formal_parameter*/
+    + 1 /*imported_declaration*/
+    + 1 /*label*/
+    + 1 /*lexical_block*/
+    + 1 /*member*/
+    + 1 /*pointer_type*/
+    + 1 /*reference_type*/
+    + 1 /*compile_unit*/
+    + 1 /*string_type*/
+    + 1 /*structure_type*/
+    + 1 /*subroutine_type*/
+    + 1 /*typedef*/
+    + 1 /*union_type*/
+    + 1 /*unspecified_parameters*/
+    + 1 /*variant*/
+    + 1 /*common_block*/
+    + 1 /*common_inclusion*/
+    + 1 /*inheritance*/
+    + 1 /*inlined_subroutine*/
+    + 1 /*module*/
+    + 1 /*ptr_to_member_type*/
+    + 1 /*set_type*/
+    + 1 /*subrange_type*/
+    + 1 /*with_stmt*/
+    + 1 /*access_declaration*/
+    + 1 /*base_type*/
+    + 1 /*catch_block*/
+    + 1 /*const_type*/
+    + 1 /*constant*/
+    + 1 /*enumerator*/
+    + 1 /*file_type*/
+    + 1 /*friend*/
+    + 1 /*namelist*/
+    + 1 /*namelist_item*/
+    + 1 /*packed_type*/
+    + 1 /*subprogram*/
+    + 1 /*template_type_parameter*/
+    + 1 /*template_value_parameter*/
+    + 1 /*thrown_type*/
+    + 1 /*try_block*/
+    + 1 /*variant_part*/
+    + 1 /*variable*/
+    + 1 /*volatile_type*/
+    + 1 /*dwarf_procedure*/
+    + 1 /*restrict_type*/
+    + 1 /*interface_type*/
+    + 1 /*namespace*/
+    + 1 /*imported_module*/
+    + 1 /*unspecified_type*/
+    + 1 /*partial_unit*/
+    + 1 /*imported_unit*/
+    + 1 /*condition*/
+    + 1 /*shared_type*/
+    + 1 /*type_unit*/
+    + 1 /*rvalue_reference_type*/
+    + 1 /*template_alias*/
+    + 1 /*coarray_type*/
+    + 1 /*generic_subrange*/
+    + 1 /*dynamic_type*/
+    + 1 /*atomic_type*/
+    + 1 /*call_site*/
+    + 1 /*call_site_parameter*/
+    + 1 /*skeleton_unit*/
+    + 1 /*immutable_type*/
+> kAllCoreTags = {{
+    DwarfTag::DW_TAG_array_type,
+    DwarfTag::DW_TAG_class_type,
+    DwarfTag::DW_TAG_entry_point,
+    DwarfTag::DW_TAG_enumeration_type,
+    DwarfTag::DW_TAG_formal_parameter,
+    DwarfTag::DW_TAG_imported_declaration,
+    DwarfTag::DW_TAG_label,
+    DwarfTag::DW_TAG_lexical_block,
+    DwarfTag::DW_TAG_member,
+    DwarfTag::DW_TAG_pointer_type,
+    DwarfTag::DW_TAG_reference_type,
+    DwarfTag::DW_TAG_compile_unit,
+    DwarfTag::DW_TAG_string_type,
+    DwarfTag::DW_TAG_structure_type,
+    DwarfTag::DW_TAG_subroutine_type,
+    DwarfTag::DW_TAG_typedef,
+    DwarfTag::DW_TAG_union_type,
+    DwarfTag::DW_TAG_unspecified_parameters,
+    DwarfTag::DW_TAG_variant,
+    DwarfTag::DW_TAG_common_block,
+    DwarfTag::DW_TAG_common_inclusion,
+    DwarfTag::DW_TAG_inheritance,
+    DwarfTag::DW_TAG_inlined_subroutine,
+    DwarfTag::DW_TAG_module,
+    DwarfTag::DW_TAG_ptr_to_member_type,
+    DwarfTag::DW_TAG_set_type,
+    DwarfTag::DW_TAG_subrange_type,
+    DwarfTag::DW_TAG_with_stmt,
+    DwarfTag::DW_TAG_access_declaration,
+    DwarfTag::DW_TAG_base_type,
+    DwarfTag::DW_TAG_catch_block,
+    DwarfTag::DW_TAG_const_type,
+    DwarfTag::DW_TAG_constant,
+    DwarfTag::DW_TAG_enumerator,
+    DwarfTag::DW_TAG_file_type,
+    DwarfTag::DW_TAG_friend,
+    DwarfTag::DW_TAG_namelist,
+    DwarfTag::DW_TAG_namelist_item,
+    DwarfTag::DW_TAG_packed_type,
+    DwarfTag::DW_TAG_subprogram,
+    DwarfTag::DW_TAG_template_type_parameter,
+    DwarfTag::DW_TAG_template_value_parameter,
+    DwarfTag::DW_TAG_thrown_type,
+    DwarfTag::DW_TAG_try_block,
+    DwarfTag::DW_TAG_variant_part,
+    DwarfTag::DW_TAG_variable,
+    DwarfTag::DW_TAG_volatile_type,
+    DwarfTag::DW_TAG_dwarf_procedure,
+    DwarfTag::DW_TAG_restrict_type,
+    DwarfTag::DW_TAG_interface_type,
+    DwarfTag::DW_TAG_namespace,
+    DwarfTag::DW_TAG_imported_module,
+    DwarfTag::DW_TAG_unspecified_type,
+    DwarfTag::DW_TAG_partial_unit,
+    DwarfTag::DW_TAG_imported_unit,
+    DwarfTag::DW_TAG_condition,
+    DwarfTag::DW_TAG_shared_type,
+    DwarfTag::DW_TAG_type_unit,
+    DwarfTag::DW_TAG_rvalue_reference_type,
+    DwarfTag::DW_TAG_template_alias,
+    DwarfTag::DW_TAG_coarray_type,
+    DwarfTag::DW_TAG_generic_subrange,
+    DwarfTag::DW_TAG_dynamic_type,
+    DwarfTag::DW_TAG_atomic_type,
+    DwarfTag::DW_TAG_call_site,
+    DwarfTag::DW_TAG_call_site_parameter,
+    DwarfTag::DW_TAG_skeleton_unit,
+    DwarfTag::DW_TAG_immutable_type
+}};
+
+// We'll also make similar constexpr arrays for attributes, forms, langs, unit types.
+// (Omitted here for brevity but same pattern.)
+extern const std::array<DwarfAttr, /*N*/> kAllCoreAttrs;
+extern const std::array<DwarfForm, /*N*/> kAllCoreForms;
+extern const std::array<DwarfLang, /*N*/> kAllCoreLangs;
+extern const std::array<DwarfUnitType, /*N*/> kAllCoreUnitTypes;
+
+} // namespace cv2pdb::dwarf
+```
+
+You’d fill in `kAllCoreAttrs`, `kAllCoreForms`, `kAllCoreLangs`, `kAllCoreUnitTypes` the exact same way: exhaustively list all enum values we care about in v1.
+
+### `ut/test_dwarf_spec.cpp`
+
+This is where Catch2 enforces completeness.
+
+```cpp
+#include <catch2/catch_test_macros.hpp>
+#include "dwarf/DwarfSpec.h"
+#include "converter/SupportMatrix.h" // declares SupportsDwarfTag/... etc.
+
+using namespace cv2pdb::dwarf;
+
+TEST_CASE("Every DW_TAG_* in kAllCoreTags is supported") {
+    for (auto tag : kAllCoreTags) {
+        INFO("tag enum value = " << static_cast<unsigned>(tag));
+        REQUIRE(SupportsDwarfTag(tag));
+    }
+}
+
+TEST_CASE("Every DW_AT_* in kAllCoreAttrs is supported") {
+    for (auto at : kAllCoreAttrs) {
+        INFO("attr enum value = " << static_cast<unsigned>(at));
+        REQUIRE(SupportsDwarfAttr(at));
+    }
+}
+
+TEST_CASE("Every DW_FORM_* in kAllCoreForms is parse+emit supported") {
+    for (auto form : kAllCoreForms) {
+        INFO("form enum value = " << static_cast<unsigned>(form));
+        REQUIRE(SupportsDwarfForm(form));
+    }
+}
+
+TEST_CASE("Every DW_LANG_* in kAllCoreLangs maps to a PDB language") {
+    for (auto lang : kAllCoreLangs) {
+        INFO("lang enum value = " << static_cast<unsigned>(lang));
+        REQUIRE(SupportsDwarfLang(lang));
+    }
+}
+
+TEST_CASE("Every DW_UT_* in kAllCoreUnitTypes round-trips through IR") {
+    for (auto ut : kAllCoreUnitTypes) {
+        INFO("unit type enum value = " << static_cast<unsigned>(ut));
+        REQUIRE(SupportsDwarfUnitType(ut));
+    }
+}
+```
+
+Notes:
+
+* `SupportsDwarfTag()` etc. can just be thin wrappers that look up the enum in your mapping tables. For example, if you have `static std::unordered_map<DwarfTag, IrKind> gTagToIr;`, then `SupportsDwarfTag(tag)` = `gTagToIr.contains(tag);`.
+* These tests fail as soon as we add a new DW_TAG_* into `kAllCoreTags` but forget to add it to the mapping. That’s exactly what we want.
+
+---
+
+## 4. Why this setup is good
+
+* **Exhaustive coverage = zero silent gaps.**
+  If LLVM or MSVC starts emitting (for example) `DW_TAG_atomic_type` (used for C11 `_Atomic`) and we forgot to support it, tests break immediately. `DW_TAG_atomic_type` is already standard DWARF5. ([Dwarfstd][4])
+
+* **Bitfields, unions, anon structs embedded in unions, etc.**
+  Those are all expressible using:
+
+  * `DW_TAG_member` inside `DW_TAG_union_type` or `DW_TAG_structure_type`
+  * with `DW_AT_data_member_location`, `DW_AT_bit_size`, `DW_AT_bit_offset` to describe bitfields
+  * and possibly unnamed children (no `DW_AT_name`) for anonymous structs/unions.
+
+  Our tests force us not to “forget” these attributes, because `DW_AT_bit_size`, `DW_AT_bit_offset`, `DW_AT_data_member_location`, etc. are all in `kAllCoreAttrs`.
+
+* **Recursively embedded structs / arrays / templates.**
+  Recursion is handled structurally, not by a special tag. `DW_TAG_structure_type` containing `DW_TAG_member` whose `DW_AT_type` points to another `DW_TAG_structure_type` → already covered because `DW_TAG_structure_type` and `DW_AT_type` are in the required lists. Arrays use `DW_TAG_array_type` + nested `DW_TAG_subrange_type` DIEs with bounds via `DW_AT_upper_bound` / `DW_AT_lower_bound`, which are also on the required lists. Templates are covered by `DW_TAG_template_type_parameter`, `DW_TAG_template_value_parameter`, and attributes like `DW_AT_type`, `DW_AT_const_value`.
+
+* **Local or CU-scoped types vs global types.**
+  DWARF encodes local block-scope structs with `DW_TAG_lexical_block` / `DW_TAG_subprogram` parents instead of putting them at CU scope. That’s not a new tag; it’s just where the DIE is attached in the tree. Since `DW_TAG_lexical_block`, `DW_TAG_subprogram`, etc. are required, and our IR nodes store parent pointers, we’re fine.
+
+* **Skeleton units / split DWARF.**
+  Covered by `DW_TAG_skeleton_unit` and unit types like `DW_UT_skeleton`, `DW_UT_split_compile`, etc. ([Prevanders][1])
+  Without this, PDB↔DWARF for LTO / ThinLTO / -gdwarf-5 split flows would lose info.
+
+---
+
+## TL;DR what you get now
+
+1. A spec-driven canonical list of:
+
+   * DW_TAG_* (core DWARF5 tags)
+   * DW_AT_* (core DWARF5 attributes)
+   * DW_FORM_* (core DWARF5 forms)
+   * DW_LANG_* (languages)
+   * DW_UT_* (unit types)
+
+2. A header (`dwarf/DwarfSpec.h`) that:
+
+   * Declares those enums with official numeric values (so we don't drift from DWARF5).
+   * Declares `constexpr std::array<>` collections like `kAllCoreTags`, etc.
+
+3. Catch2 tests (`ut/test_dwarf_spec.cpp`) that iterate those arrays and REQUIRE support via `SupportsDwarfX()` helpers. If anything in DWARF5 that we said we care about isn't mapped in our DWARF<->IR<->PDB layer, CI goes red.
+
+This is the backbone for completeness / coverage.
+From here we can start implementing `SupportsDwarfTag` etc. and building out IR mapping, and we'll immediately know when we hit unsupported constructs like bitfields-in-unions or skeleton units.
+
+[1]: https://www.prevanders.net/libdwarfdoc/dwarf_8h_source.html "libdwarf: /home/davea/dwarf/code/src/lib/libdwarf/dwarf.h Source File"
+[2]: https://dwarfstd.org/doc/DWARF5.pdf?utm_source=chatgpt.com "DWARF Debugging Information Format Version 5"
+[3]: https://git.trustedfirmware.org/plugins/gitiles/hafnium/prebuilts.git/%2B/f4ef2d0d9dbf6f696386b786eb60884a933685b0/linux-x64/clang/include/llvm/BinaryFormat/Dwarf.h "linux-x64/clang/include/llvm/BinaryFormat/Dwarf.h - hafnium/prebuilts.git - TrustedFirmware Git Browser"
+[4]: https://dwarfstd.org/issues/131112.1.html?utm_source=chatgpt.com "Issue 131112.1: Add DW_TAG_atomic_type for C11 _Atomic"
